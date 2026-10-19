@@ -4,8 +4,7 @@
   "description": "Finds every file directly inside a given directory that carries an @skill declaration, by reading each file — the directory is always an argument, never a hardcoded pool path.",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/red-cup-engineering/computer-inference-system-services-section.git",
-    "directory": "services/agent-services-section/services/skills-services-section/services/script-transformation-services-section/services/find-skill-scripts-in-a-directory-service"
+    "url": "git+https://github.com/red-cup-engineering/find-skill-scripts-in-a-directory-service.git"
   },
   "type": "module",
   "license": "MIT",
