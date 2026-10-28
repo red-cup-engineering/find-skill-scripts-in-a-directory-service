@@ -1,32 +1,52 @@
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { readFileSync, readdirSync, statSync } from "node:fs";
+import { extname, join, resolve } from "node:path";
+import { transformJavascriptScriptToSkill } from "@red-cup-engineering/transform-javascript-script-to-skill-service";
 
-const HAS_SKILL_TAG = /@skill\s/u;
+const SCRIPT_EXTENSIONS = new Set([".js", ".mjs"]);
 
 /**
- * Every flat file directly inside one directory that carries an `@skill`
- * declaration in its text — found by reading each file, not by trusting a
- * name pattern or a hardcoded pool path.
+ * Read the original flat pool and report eligibility for the existing JSDoc-to-skill
+ * transformer. Every negative remains visible so a producer can repair the
+ * original script rather than confusing zero candidates with a successful scan.
  *
- * Precondition: `directory` exists on disk.
- * Input: `directory` — an absolute or relative path, taken as an argument.
- *   This service never hardcodes a pool path; the caller names the pool it
- *   means.
- * Output: an array of absolute paths, sorted, to every regular file directly
- *   inside `directory` whose text matches `@skill `.
- * Postcondition: subdirectories are not descended into; a directory that
- *   does not exist raises a clear error rather than returning an empty
- *   array, since an absent pool and an empty pool are different facts.
+ * This is source discovery, NOT validation, skill projection, a harness grant,
+ * evidence of a runnable main guard, or publication. Those belong to the
+ * existing downstream Engineering services and the receiver.
  */
-export function findSkillScriptsInADirectory(directory) {
+export function inspectSkillScriptsInADirectory(directory) {
   if (typeof directory !== "string" || directory === "") throw new TypeError("directory must be a non-empty string");
   const root = resolve(directory);
-  if (!existsSync(root)) throw new Error(`no such directory: ${root}`);
-  if (!statSync(root).isDirectory()) throw new Error(`not a directory: ${root}`);
+  let rootStat;
+  try { rootStat = statSync(root); }
+  catch (error) {
+    if (error.code === "ENOENT") throw new Error("no such directory: " + root);
+    throw error;
+  }
+  if (!rootStat.isDirectory()) throw new Error("not a directory: " + root);
 
-  return readdirSync(root)
-    .map((entry) => join(root, entry))
-    .filter((path) => statSync(path).isFile())
-    .filter((path) => HAS_SKILL_TAG.test(readFileSync(path, "utf8")))
-    .sort();
+  const candidates = [], rejected = [];
+  for (const entry of readdirSync(root, { withFileTypes: true })) {
+    // No arbitrary text matches, symlink escapes, nested pools, or second parser.
+    if (!entry.isFile() || !SCRIPT_EXTENSIONS.has(extname(entry.name))) continue;
+    const source = join(root, entry.name);
+    const transformed = transformJavascriptScriptToSkill(readFileSync(source, "utf8"), entry.name);
+    let reason = transformed.error;
+    if (!reason && (typeof transformed.record.description !== "string" || !transformed.record.description.trim())) {
+      reason = "missing nonempty JSDoc @description";
+    }
+    if (!reason && (typeof transformed.body !== "string" || !transformed.body.trim())) {
+      reason = "missing nonempty instructional prose for SKILL.md";
+    }
+    if (reason) rejected.push({ path: source, reason });
+    else candidates.push(source);
+  }
+  return Object.freeze({
+    candidates: Object.freeze(candidates.sort()),
+    rejected: Object.freeze(rejected.sort((left, right) => left.path.localeCompare(right.path)).map(Object.freeze)),
+  });
+}
+
+/** Backward-compatible result shape, with current transform admission semantics. */
+export function findSkillScriptsInADirectory(directory) {
+  return [...inspectSkillScriptsInADirectory(directory).candidates];
 }

@@ -1,63 +1,66 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { findSkillScriptsInADirectory } from "../src/find-skill-scripts-in-a-directory.mjs";
+import { findSkillScriptsInADirectory, inspectSkillScriptsInADirectory } from "../src/find-skill-scripts-in-a-directory.mjs";
 
 async function withDirectory(run) {
   const dir = await mkdtemp(join(tmpdir(), "find-skill-scripts-"));
-  try {
-    await run(dir);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
+  try { await run(dir); }
+  finally { await rm(dir, { recursive: true, force: true }); }
 }
 
-test("finds every file carrying an @skill declaration, any extension", async () => {
-  await withDirectory(async (dir) => {
-    await writeFile(join(dir, "make-a-widget.js"), "/**\n * @skill making-a-widget\n */\n");
-    await writeFile(join(dir, "carry-a-decision.mjs"), "/**\n * @skill carrying-a-decision\n */\n");
-    await writeFile(join(dir, "not-a-skill.js"), "console.log('plain script');\n");
-    await writeFile(join(dir, "README.md"), "# not a skill either\n");
+const documented = (name = "Does sourced work", method = "Inspect exact source. Receive a result.") =>
+  "/**\n * @description " + name + "\n *\n * " + method + "\n */\nif (import.meta.main) process.stdout.write('ok');\n";
 
+test("discovers documented projectable JS and MJS, not retired @skill declarations", async () => {
+  await withDirectory(async (dir) => {
+    await writeFile(join(dir, "make-a-widget.js"), documented());
+    await writeFile(join(dir, "carry-a-decision.mjs"), documented("Carries a decision", "Read current authority."));
+    await writeFile(join(dir, "retired.js"), "/**\n * @description Old\n * @skill retired\n */\n");
+    await writeFile(join(dir, "plain.js"), "console.log('plain script');\n");
+    await writeFile(join(dir, "README.md"), documented());
+    await writeFile(join(dir, "empty-method.js"), "/**\n * @description No real instruction\n */\n");
+    await writeFile(join(dir, "empty-description.js"), "/**\n * @param {string} text - input\n * Instruction\n */\n");
     const found = findSkillScriptsInADirectory(dir);
-    assert.deepEqual(
-      found.map((p) => p.split("/").at(-1)).sort(),
-      ["carry-a-decision.mjs", "make-a-widget.js"],
-    );
-    assert.ok(found.every((p) => p.startsWith("/")));
+    assert.deepEqual(found, [join(dir, "carry-a-decision.mjs"), join(dir, "make-a-widget.js")]);
+    const inspected = inspectSkillScriptsInADirectory(dir);
+    assert.deepEqual(inspected.candidates, found);
+    assert.deepEqual(inspected.rejected.map((x) => x.path.split("/").at(-1)), [
+      "empty-description.js", "empty-method.js", "plain.js", "retired.js"
+    ]);
+    assert.match(inspected.rejected.at(-1).reason, /unknown declaration '@skill'/u);
+    assert.match(inspected.rejected[0].reason, /description/u);
+    assert.match(inspected.rejected[1].reason, /instructional prose/u);
   });
 });
 
-test("does not descend into subdirectories", async () => {
+test("does not recurse into nested directories or follow symlinked files", async () => {
   await withDirectory(async (dir) => {
     await mkdir(join(dir, "nested"));
-    await writeFile(join(dir, "nested", "hidden.js"), "/**\n * @skill hidden-one\n */\n");
-    const found = findSkillScriptsInADirectory(dir);
-    assert.deepEqual(found, []);
+    await writeFile(join(dir, "nested", "hidden.js"), documented());
+    await symlink(join(dir, "nested", "hidden.js"), join(dir, "link.js"));
+    assert.deepEqual(inspectSkillScriptsInADirectory(dir), { candidates: [], rejected: [] });
   });
 });
 
-test("takes the directory as an argument and never hardcodes a pool path", async () => {
-  await withDirectory(async (dirA) => {
-    await withDirectory(async (dirB) => {
-      await writeFile(join(dirA, "a.js"), "/**\n * @skill in-a\n */\n");
-      await writeFile(join(dirB, "b.js"), "/**\n * @skill in-b\n */\n");
-      assert.deepEqual(findSkillScriptsInADirectory(dirA), [join(dirA, "a.js")]);
-      assert.deepEqual(findSkillScriptsInADirectory(dirB), [join(dirB, "b.js")]);
+test("reads caller-selected pools rather than a hardcoded Academy path", async () => {
+  await withDirectory(async (a) => {
+    await withDirectory(async (b) => {
+      await writeFile(join(a, "a.js"), documented());
+      await writeFile(join(b, "b.mjs"), documented());
+      assert.deepEqual(findSkillScriptsInADirectory(a), [join(a, "a.js")]);
+      assert.deepEqual(findSkillScriptsInADirectory(b), [join(b, "b.mjs")]);
     });
   });
 });
 
-test("throws a clear error when the directory does not exist", () => {
+test("refuses missing directories and file paths distinctly", async () => {
   assert.throws(() => findSkillScriptsInADirectory("/no/such/directory/at/all"), /no such directory/u);
-});
-
-test("throws when the path is a file, not a directory", async () => {
   await withDirectory(async (dir) => {
-    const filePath = join(dir, "file.txt");
-    await writeFile(filePath, "hi\n");
-    assert.throws(() => findSkillScriptsInADirectory(filePath), /not a directory/u);
+    const file = join(dir, "file.txt");
+    await writeFile(file, "not a directory");
+    assert.throws(() => findSkillScriptsInADirectory(file), /not a directory/u);
   });
 });
